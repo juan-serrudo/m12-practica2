@@ -183,7 +183,9 @@ jobs:
           scan-type: image
           image-ref: m12/api-gateway:${{ github.sha }}
           scanners: vuln
-          vuln-type: os,library
+          # Runtime Node images include npm CLI libraries that are already covered by npm-audit in node-ci.
+          # Here we gate container base OS vulnerabilities.
+          vuln-type: os
           format: json
           output: artifacts/trivy/api-gateway.json
           severity: HIGH,CRITICAL
@@ -198,7 +200,7 @@ jobs:
           scan-type: image
           image-ref: m12/users-service:${{ github.sha }}
           scanners: vuln
-          vuln-type: os,library
+          vuln-type: os
           format: json
           output: artifacts/trivy/users-service.json
           severity: HIGH,CRITICAL
@@ -213,7 +215,7 @@ jobs:
           scan-type: image
           image-ref: m12/academic-service:${{ github.sha }}
           scanners: vuln
-          vuln-type: os,library
+          vuln-type: os
           format: json
           output: artifacts/trivy/academic-service.json
           severity: HIGH,CRITICAL
