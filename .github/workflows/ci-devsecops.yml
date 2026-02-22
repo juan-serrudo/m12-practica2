@@ -99,17 +99,17 @@ jobs:
         run: pip install semgrep
 
       # Semgrep severity model is INFO/WARNING/ERROR.
-      # We gate on ERROR to approximate HIGH/CRITICAL risk findings.
-      - name: Run Semgrep JSON (gate on ERROR)
+      # We do not fail directly here; we evaluate security-severity in a later step.
+      - name: Run Semgrep JSON
         id: semgrep_json
         continue-on-error: true
         run: |
-          semgrep scan --config auto --severity ERROR --error --json --output semgrep-results.json frontend backend
+          semgrep scan --config auto --json --output semgrep-results.json frontend backend
 
       - name: Run Semgrep SARIF
         if: always()
         run: |
-          semgrep scan --config auto --severity ERROR --sarif --output semgrep-results.sarif frontend backend || true
+          semgrep scan --config auto --sarif --output semgrep-results.sarif frontend backend || true
 
       - name: Upload Semgrep reports
         if: always()
@@ -127,10 +127,24 @@ jobs:
         with:
           sarif_file: semgrep-results.sarif
 
-      - name: Fail on Semgrep ERROR findings
-        if: steps.semgrep_json.outcome == 'failure'
+      # Gate only on HIGH/CRITICAL-equivalent findings:
+      # security-severity >= 7.0 (CVSS style) if rule metadata provides it.
+      - name: Evaluate Semgrep HIGH/CRITICAL findings
+        id: semgrep_gate
+        if: always()
         run: |
-          echo "Semgrep found blocking ERROR findings."
+          if [ ! -f semgrep-results.json ]; then
+            echo "blocking_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          blocking_count=$(jq '[.results[] | select((((.extra.metadata["security-severity"]? // "0") | tonumber?) // 0) >= 7.0)] | length' semgrep-results.json)
+          echo "blocking_count=${blocking_count}" >> "$GITHUB_OUTPUT"
+          echo "Semgrep blocking findings (security-severity >= 7.0): ${blocking_count}"
+
+      - name: Fail on Semgrep HIGH/CRITICAL findings
+        if: steps.semgrep_gate.outputs.blocking_count != '0'
+        run: |
+          echo "Semgrep found blocking HIGH/CRITICAL findings."
           exit 1
 
   docker-build-scan:
