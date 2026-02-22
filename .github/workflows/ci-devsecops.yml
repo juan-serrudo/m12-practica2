@@ -245,6 +245,22 @@ jobs:
             artifacts/trivy/*.json
           if-no-files-found: warn
 
+      - name: Print Trivy summary
+        if: always()
+        run: |
+          for f in artifacts/trivy/*.json; do
+            echo "===== ${f} ====="
+            jq -r '
+              [ .Results[]? | .Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL") ] as $v
+              | "HIGH/CRITICAL count: \($v | length)"
+            ' "$f"
+            jq -r '
+              .Results[]? | .Vulnerabilities[]?
+              | select(.Severity == "HIGH" or .Severity == "CRITICAL")
+              | "\(.Severity)\t\(.PkgName)\t\(.VulnerabilityID)\t\(.InstalledVersion) -> \(.FixedVersion // "N/A")"
+            ' "$f" | head -n 20
+          done
+
       - name: Fail on Trivy HIGH/CRITICAL findings
         if: |
           steps.trivy_api_gateway.outcome == 'failure' ||

@@ -1,25 +1,12 @@
-#FROM node:20-alpine
-
-#WORKDIR /app
-
-#COPY package*.json ./
-#RUN npm install
-
-#COPY . .
-#RUN npm run build
-
-#EXPOSE 4173
-#CMD ["npm", "run", "preview", "--", "--host"]
-
-# Build
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 RUN npm run build
-# Serve
-FROM nginx:alpine
+
+FROM nginx:stable-alpine
+RUN apk upgrade --no-cache
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
