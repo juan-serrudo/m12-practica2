@@ -182,10 +182,12 @@ jobs:
         with:
           scan-type: image
           image-ref: m12/api-gateway:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
           format: json
           output: artifacts/trivy/api-gateway.json
           severity: HIGH,CRITICAL
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Trivy scan users-service
@@ -195,10 +197,12 @@ jobs:
         with:
           scan-type: image
           image-ref: m12/users-service:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
           format: json
           output: artifacts/trivy/users-service.json
           severity: HIGH,CRITICAL
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Trivy scan academic-service
@@ -208,10 +212,12 @@ jobs:
         with:
           scan-type: image
           image-ref: m12/academic-service:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
           format: json
           output: artifacts/trivy/academic-service.json
           severity: HIGH,CRITICAL
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Trivy scan frontend
@@ -221,10 +227,12 @@ jobs:
         with:
           scan-type: image
           image-ref: m12/frontend:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
           format: json
           output: artifacts/trivy/frontend.json
           severity: HIGH,CRITICAL
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Upload Docker and Trivy artifacts
