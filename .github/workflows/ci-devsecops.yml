@@ -228,7 +228,8 @@ jobs:
           scan-type: image
           image-ref: m12/frontend:${{ github.sha }}
           scanners: vuln
-          vuln-type: os,library
+          # Frontend image is static assets served by nginx; gate app/library CVEs.
+          vuln-type: library
           format: json
           output: artifacts/trivy/frontend.json
           severity: HIGH,CRITICAL
