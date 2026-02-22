@@ -1,0 +1,234 @@
+name: CI DevSecOps
+
+on:
+  push:
+    branches: ["main", "feature/**"]
+  pull_request:
+    branches: ["main", "feature/**"]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  node-ci:
+    name: Node CI (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: frontend
+            path: frontend
+          - name: api-gateway
+            path: backend/api-gateway
+          - name: users-service
+            path: backend/users-service
+          - name: academic-service
+            path: backend/academic-service
+
+    steps:
+      # 1) Install reproducible dependencies with package-lock + npm ci
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+
+      - name: Install dependencies (reproducible)
+        working-directory: ${{ matrix.path }}
+        run: npm ci
+
+      # 2) Code quality gate (lint)
+      - name: Lint
+        working-directory: ${{ matrix.path }}
+        run: npm run lint
+
+      # 3) Automated tests gate
+      - name: Test
+        working-directory: ${{ matrix.path }}
+        run: npm test -- --ci
+
+      # 5) SCA gate using npm audit (CRITICAL threshold)
+      - name: Run npm audit (JSON)
+        id: npm_audit
+        working-directory: ${{ matrix.path }}
+        run: |
+          set +e
+          npm audit --audit-level=critical --json > npm-audit.json
+          audit_exit=$?
+          set -e
+          echo "exit_code=${audit_exit}" >> "$GITHUB_OUTPUT"
+          if [ "$audit_exit" -ne 0 ]; then
+            echo "Critical vulnerabilities detected by npm audit."
+          fi
+
+      - name: Upload npm audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-${{ matrix.name }}
+          path: ${{ matrix.path }}/npm-audit.json
+          if-no-files-found: warn
+
+      - name: Fail on critical vulnerabilities
+        if: steps.npm_audit.outputs.exit_code != '0'
+        run: |
+          echo "Failing build due to CRITICAL vulnerabilities in ${{ matrix.name }}."
+          exit 1
+
+  semgrep:
+    name: SAST Semgrep
+    runs-on: ubuntu-latest
+    needs: node-ci
+    steps:
+      # 4) SAST gate with Semgrep over frontend/ and backend/**
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      # Semgrep severity model is INFO/WARNING/ERROR.
+      # We gate on ERROR to approximate HIGH/CRITICAL risk findings.
+      - name: Run Semgrep JSON (gate on ERROR)
+        id: semgrep_json
+        continue-on-error: true
+        run: |
+          semgrep scan --config auto --severity ERROR --error --json --output semgrep-results.json frontend backend
+
+      - name: Run Semgrep SARIF
+        if: always()
+        run: |
+          semgrep scan --config auto --severity ERROR --sarif --output semgrep-results.sarif frontend backend || true
+
+      - name: Upload Semgrep reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-reports
+          path: |
+            semgrep-results.json
+            semgrep-results.sarif
+          if-no-files-found: warn
+
+      - name: Upload Semgrep SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-results.sarif
+
+      - name: Fail on Semgrep ERROR findings
+        if: steps.semgrep_json.outcome == 'failure'
+        run: |
+          echo "Semgrep found blocking ERROR findings."
+          exit 1
+
+  docker-build-scan:
+    name: Docker Build and Trivy Scan
+    runs-on: ubuntu-latest
+    needs: [node-ci, semgrep]
+    steps:
+      # 6) Build Docker images with versioned tags
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images with versioned tags
+        run: |
+          mkdir -p artifacts/images artifacts/trivy
+          docker build -t m12/api-gateway:${{ github.sha }} -t m12/api-gateway:ci-${{ github.run_number }} backend/api-gateway
+          docker build -t m12/users-service:${{ github.sha }} -t m12/users-service:ci-${{ github.run_number }} backend/users-service
+          docker build -t m12/academic-service:${{ github.sha }} -t m12/academic-service:ci-${{ github.run_number }} backend/academic-service
+          docker build -t m12/frontend:${{ github.sha }} -t m12/frontend:ci-${{ github.run_number }} frontend
+
+      - name: Export images as artifacts
+        run: |
+          docker save m12/api-gateway:${{ github.sha }} -o artifacts/images/api-gateway-${{ github.sha }}.tar
+          docker save m12/users-service:${{ github.sha }} -o artifacts/images/users-service-${{ github.sha }}.tar
+          docker save m12/academic-service:${{ github.sha }} -o artifacts/images/academic-service-${{ github.sha }}.tar
+          docker save m12/frontend:${{ github.sha }} -o artifacts/images/frontend-${{ github.sha }}.tar
+
+      # 7) Container image security scan with Trivy (HIGH/CRITICAL gate)
+      - name: Trivy scan api-gateway
+        id: trivy_api_gateway
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: image
+          image-ref: m12/api-gateway:${{ github.sha }}
+          format: json
+          output: artifacts/trivy/api-gateway.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Trivy scan users-service
+        id: trivy_users_service
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: image
+          image-ref: m12/users-service:${{ github.sha }}
+          format: json
+          output: artifacts/trivy/users-service.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Trivy scan academic-service
+        id: trivy_academic_service
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: image
+          image-ref: m12/academic-service:${{ github.sha }}
+          format: json
+          output: artifacts/trivy/academic-service.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Trivy scan frontend
+        id: trivy_frontend
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: image
+          image-ref: m12/frontend:${{ github.sha }}
+          format: json
+          output: artifacts/trivy/frontend.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Upload Docker and Trivy artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images-and-trivy-reports
+          path: |
+            artifacts/images/*.tar
+            artifacts/trivy/*.json
+          if-no-files-found: warn
+
+      - name: Fail on Trivy HIGH/CRITICAL findings
+        if: |
+          steps.trivy_api_gateway.outcome == 'failure' ||
+          steps.trivy_users_service.outcome == 'failure' ||
+          steps.trivy_academic_service.outcome == 'failure' ||
+          steps.trivy_frontend.outcome == 'failure'
+        run: |
+          echo "Trivy found HIGH/CRITICAL vulnerabilities in one or more images."
+          exit 1
